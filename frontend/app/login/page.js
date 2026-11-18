@@ -251,33 +251,6 @@ export default function LoginPage() {
             </button>
           </div>
 
-          <div
-            style={{
-              marginBottom: "20px",
-              padding: "10px 14px",
-              borderRadius: "8px",
-              backgroundColor: roleTab === "admin" ? "#fef3c7" : roleTab === "agent" ? "#eef2ff" : "#eff6ff",
-              border: roleTab === "admin" ? "1px solid #fde68a" : roleTab === "agent" ? "1px solid #c7d2fe" : "1px solid #bfdbfe",
-              fontSize: "12px",
-              color: roleTab === "admin" ? "#92400e" : roleTab === "agent" ? "#3730a3" : "#1e40af",
-              lineHeight: 1.4,
-            }}
-          >
-            {roleTab === "admin" ? (
-              <>
-                <strong>Administrator Mode:</strong> Username <code>admin</code> (use the configured <code>ADMIN_PASSWORD</code> from <code>.env</code>). Access to KB, SLA, Analytics, User Roles &amp; Inbox.
-              </>
-            ) : roleTab === "agent" ? (
-              <>
-                <strong>Support Staff (Agent):</strong> <code>jane.doe@company.com</code> (any demo password). Access to Ticket Inbox at <code>/agent</code> only (no admin console).
-              </>
-            ) : (
-              <>
-                <strong>Customer Portal:</strong> <code>marcus.vance@company.com</code> or <code>elena.rostova@company.com</code>. View and submit only your own tickets.
-              </>
-            )}
-          </div>
-
           {errorMsg && (
             <div
               style={{
