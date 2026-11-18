@@ -3,6 +3,10 @@ import "./globals.css";
 export const metadata = {
   title: "ApexDesk - AI Helpdesk & Workflow Automation",
   description: "Modern SaaS IT Helpdesk & Agentic Workflow Platform",
+  icons: {
+    icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
+    shortcut: "/favicon.svg",
+  },
 };
 
 export default function RootLayout({ children }) {
