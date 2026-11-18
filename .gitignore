@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+data/
+data/app.db
+data/chroma/
+data/*.db
+!data/.gitkeep
+__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
+.next/
+.next-build/
+*.local

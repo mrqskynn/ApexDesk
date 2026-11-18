@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: ai-has-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: OPENAI_BASE_URL
+        value: https://generativelanguage.googleapis.com/v1beta/openai/
+      - key: OPENAI_CHAT_MODEL
+        value: gemini-3.1-flash-lite-preview
+      - key: OPENAI_EMBEDDING_MODEL
+        value: gemini-embedding-001
