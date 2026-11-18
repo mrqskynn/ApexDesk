@@ -152,10 +152,21 @@ export default function MyTicketsPage() {
             const timeAgo = t.created_at ? formatTimeAgo(t.created_at) : "Recently";
             const persistedReplies = Array.isArray(t.notes)
               ? t.notes.map((n) => ({
-                  sender: n.author || "Support Staff",
-                  role: n.type === "ai" ? "ai" : "agent",
+                  sender:
+                    n.type === "customer"
+                      ? "You"
+                      : n.type === "ai"
+                      ? "ApexDesk AI"
+                      : n.author || "Support Staff",
+                  role:
+                    n.type === "customer"
+                      ? "user"
+                      : n.type === "ai"
+                      ? "ai"
+                      : "agent",
                   time: formatTimeAgo(n.time),
                   text: n.text || "",
+                  citations: Array.isArray(n.citations) ? n.citations : [],
                 }))
               : [];
 
@@ -307,6 +318,8 @@ export default function MyTicketsPage() {
       const resp = await post("/chat", {
         session_id: "ticket-" + (selectedTicket.dbId || selectedTicket.id),
         message: contextualMessage,
+        display_message: userText,
+        ticket_id: selectedTicket.dbId || null,
         role: "user",
       });
 

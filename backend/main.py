@@ -7,6 +7,7 @@ import io
 import json
 import logging
 from pathlib import Path
+import re
 import sys
 import time
 from typing import Any, Dict, List, Optional
@@ -111,6 +112,8 @@ class ChatRequest(BaseModel):
     session_id: str
     message: str
     role: str = "user"
+    ticket_id: Optional[int] = None
+    display_message: Optional[str] = None
 
 
 class Citation(BaseModel):
@@ -438,14 +441,26 @@ def login(request: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse
     return authenticate_user(request, db=db)
 
 
+def _resolve_chat_ticket_id(request: ChatRequest) -> Optional[int]:
+    """Extract linked ticket ID from explicit ticket_id or ticket/agent session_id."""
+    if request.ticket_id is not None:
+        return int(request.ticket_id)
+    match = re.match(
+        r"^(?:ticket-|agent-TICK-)(\d+)$",
+        (request.session_id or "").strip(),
+        re.IGNORECASE,
+    )
+    return int(match.group(1)) if match else None
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(
     request: ChatRequest,
     db: Session = Depends(get_db),
-    _current_user: CurrentUser = Depends(require_role("customer", "agent", "admin")),
+    current_user: CurrentUser = Depends(require_role("customer", "agent", "admin")),
 ) -> ChatResponse:
     """Answer IT questions using rate limits, guardrails, hybrid RAG, or escalate."""
-    rate_key = request.session_id.strip() if request.session_id else f"user:{_current_user.id}"
+    rate_key = request.session_id.strip() if request.session_id else f"user:{current_user.id}"
     if not check_rate_limit(rate_key):
         raise HTTPException(
             status_code=429,
@@ -532,10 +547,54 @@ def chat(
             outcome=outcome,
         )
         db.add(log_entry)
+
+        # Also record the conversation turn on the linked ticket so /my-tickets and /agent persist it
+        target_ticket_id = _resolve_chat_ticket_id(request)
+        if target_ticket_id is not None:
+            ticket = db.query(Ticket).filter(Ticket.id == target_ticket_id).first()
+            can_append = ticket is not None and (
+                current_user.role in ("agent", "admin") or ticket.user_id == current_user.id
+            )
+            if can_append:
+                now = datetime.now(timezone.utc)
+                now_iso = now.isoformat()
+                ts_ms = int(time.time() * 1000)
+                visible_text = redact_pii((request.display_message or request.message).strip())
+                if visible_text:
+                    _append_ticket_note(
+                        ticket,
+                        {
+                            "id": f"chat-u-{ts_ms}",
+                            "type": "customer" if current_user.role == "customer" else "agent",
+                            "author": current_user.name,
+                            "author_id": current_user.id,
+                            "author_role": current_user.role,
+                            "time": now_iso,
+                            "text": visible_text,
+                        },
+                    )
+                _append_ticket_note(
+                    ticket,
+                    {
+                        "id": f"chat-ai-{ts_ms + 1}",
+                        "type": "ai",
+                        "author": "ApexDesk AI",
+                        "time": now_iso,
+                        "text": reply_text,
+                        "citations": [c.model_dump() for c in citations],
+                        "action_taken": action_taken,
+                        "escalated": escalated,
+                        "latency_ms": latency_ms,
+                    },
+                )
+                if escalated and (ticket.status or "").strip().lower() != "resolved":
+                    ticket.status = "escalated"
+                ticket.updated_at = now
+
         db.commit()
     except Exception:
         db.rollback()
-        logger.exception("Failed to commit chat_log for session %s", request.session_id)
+        logger.exception("Failed to commit chat_log/ticket chat for session %s", request.session_id)
 
     return ChatResponse(
         reply=reply_text,
@@ -544,6 +603,79 @@ def chat(
         escalated=escalated,
         latency_ms=latency_ms,
     )
+
+
+@app.get("/chat/history")
+def get_chat_history(
+    session_id: str,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_role("customer", "agent", "admin")),
+) -> List[Dict[str, Any]]:
+    """Return recorded chat turns from chat_logs for the requested session."""
+    clean_sid = (session_id or "").strip()
+    if not clean_sid:
+        return []
+
+    if current_user.role == "customer":
+        own_portal_sid = f"portal-user-{current_user.id}"
+        ticket_match = re.match(r"^ticket-(\d+)$", clean_sid, re.IGNORECASE)
+        if clean_sid != own_portal_sid:
+            if ticket_match:
+                tid = int(ticket_match.group(1))
+                ticket = db.query(Ticket).filter(Ticket.id == tid).first()
+                if not ticket or ticket.user_id != current_user.id:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Forbidden: customers can only read their own chat history.",
+                    )
+            else:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Forbidden: customers can only read their own chat history.",
+                )
+
+    safe_limit = max(1, min(limit, 200))
+    rows = (
+        db.query(ChatLog)
+        .filter(ChatLog.session_id == clean_sid)
+        .order_by(ChatLog.id.asc())
+        .limit(safe_limit)
+        .all()
+    )
+    history: List[Dict[str, Any]] = []
+    for row in rows:
+        try:
+            chunks_list = json.loads(row.retrieved_chunks_json or "[]")
+            if not isinstance(chunks_list, list):
+                chunks_list = []
+        except Exception:
+            chunks_list = []
+        citations = [
+            {
+                "title": c.get("title", ""),
+                "source": c.get("source", ""),
+                "section": c.get("section", ""),
+                "score": c.get("score"),
+                "snippet": "",
+            }
+            for c in chunks_list
+            if isinstance(c, dict) and float(c.get("score") or 0.0) >= RETRIEVAL_MIN_SCORE
+        ]
+        history.append(
+            {
+                "id": row.id,
+                "session_id": row.session_id,
+                "message": row.message,
+                "reply": row.reply,
+                "citations": citations,
+                "action_taken": row.action_taken,
+                "escalated": bool(row.escalated),
+                "latency_ms": round(float(row.latency_ms or 0.0), 2),
+                "created_at": _ensure_utc(row.created_at).isoformat() if row.created_at else "",
+            }
+        )
+    return history
 
 
 class CreateTicketRequest(BaseModel):

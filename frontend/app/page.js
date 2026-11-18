@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import PortalHeader from "../components/PortalHeader";
 import {
@@ -23,7 +23,7 @@ import {
   ChevronRight,
   ExternalLink,
 } from "lucide-react";
-import { post } from "../lib/api";
+import { apiFetch, getCurrentUser, post } from "../lib/api";
 
 const CATEGORIES = [
   {
@@ -104,6 +104,38 @@ export default function HelpCenterHome() {
   const [chatInput, setChatInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
 
+  const getPortalSessionId = () => {
+    const user = getCurrentUser();
+    if (user?.id) return `portal-user-${user.id}`;
+    return "portal-demo";
+  };
+
+  useEffect(() => {
+    const user = getCurrentUser();
+    if (!user?.id) return;
+    const sessionId = `portal-user-${user.id}`;
+    apiFetch(`/chat/history?session_id=${encodeURIComponent(sessionId)}`)
+      .then((rows) => {
+        if (!Array.isArray(rows) || rows.length === 0) return;
+        const restored = [];
+        for (const row of rows) {
+          restored.push({ role: "user", content: row.message });
+          restored.push({
+            role: "assistant",
+            content: row.reply,
+            citations: row.citations || [],
+            action_taken: row.action_taken || null,
+            escalated: Boolean(row.escalated),
+            latency_ms: row.latency_ms,
+          });
+        }
+        setMessages((prev) => [prev[0], ...restored]);
+      })
+      .catch(() => {
+        // Ignore if unauthenticated or no prior history
+      });
+  }, []);
+
   const filteredCategories =
     searchQuery.trim() === ""
       ? CATEGORIES
@@ -124,7 +156,7 @@ export default function HelpCenterHome() {
     setIsTyping(true);
 
     try {
-      const sessionId = "portal-" + (typeof window !== "undefined" ? window.sessionStorage?.getItem("sid") || "demo" : "demo");
+      const sessionId = getPortalSessionId();
       const resp = await post("/chat", {
         session_id: sessionId,
         message: prompt,

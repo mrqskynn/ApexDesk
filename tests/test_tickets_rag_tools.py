@@ -341,6 +341,92 @@ class TestTicketsRagAndTools(unittest.TestCase):
         self.assertEqual(chunks[0]["source"], "04_software_access_request.md")
         self.assertGreaterEqual(chunks[0]["score"], config.RETRIEVAL_MIN_SCORE)
 
+    def test_10_ticket_chat_persists_to_ticket_notes_and_chat_history(self) -> None:
+        create_res = self.client.post(
+            "/tickets",
+            headers=self.cust_headers,
+            json={
+                "title": "Cannot connect to VPN",
+                "description": "IT shows error",
+                "priority": "medium",
+            },
+        )
+        self.assertEqual(create_res.status_code, 200, create_res.text)
+        tid = create_res.json()["id"]
+
+        fake_chunks = [
+            {
+                "title": "SOP-02: Corporate VPN Connection & Troubleshooting",
+                "source": "02_vpn_connection.md",
+                "section": "Resolution Steps",
+                "score": 0.88,
+                "snippet": "Check local internet and refresh VPN client.",
+            }
+        ]
+        fake_answer = {
+            "reply": "Follow SOP-02 to check local internet and refresh your VPN client.",
+            "citations": fake_chunks,
+            "action_taken": None,
+            "escalated": False,
+            "prompt_tokens": 110,
+            "completion_tokens": 25,
+            "total_tokens": 135,
+            "cost_usd": 0.000032,
+            "top_rag_score": 0.88,
+            "retrieved_chunks": fake_chunks,
+            "outcome": "answered",
+        }
+
+        with patch("backend.main.retrieve", return_value=fake_chunks), patch(
+            "backend.main.answer_with_rag", return_value=fake_answer
+        ):
+            chat_res = self.client.post(
+                "/chat",
+                headers=self.cust_headers,
+                json={
+                    "session_id": f"ticket-{tid}",
+                    "message": "Ticket: Cannot connect to VPN\nDescription: IT shows error\nQuestion: VPN issue",
+                    "display_message": "VPN issue",
+                    "ticket_id": tid,
+                    "role": "user",
+                },
+            )
+            self.assertEqual(chat_res.status_code, 200, chat_res.text)
+
+            # Verify agent view of the ticket now contains BOTH the customer message and AI reply + citations
+            agent_ticket = self.client.get(f"/tickets/{tid}", headers=self.agent_headers)
+            self.assertEqual(agent_ticket.status_code, 200, agent_ticket.text)
+            notes = agent_ticket.json()["notes"]
+            self.assertEqual(len(notes), 2)
+            self.assertEqual(notes[0]["type"], "customer")
+            self.assertEqual(notes[0]["text"], "VPN issue")
+            self.assertEqual(notes[1]["type"], "ai")
+            self.assertIn("SOP-02", notes[1]["text"])
+            self.assertEqual(notes[1]["citations"][0]["source"], "02_vpn_connection.md")
+
+            # Verify standalone portal chat history persists and enforces customer isolation
+            cust_login = self.client.post(
+                "/auth/login",
+                json={"username": "marcus.vance@company.com", "password": "demo123", "role": "customer"},
+            ).json()
+            portal_sid = f"portal-user-{cust_login['id']}"
+            portal_res = self.client.post(
+                "/chat",
+                headers=self.cust_headers,
+                json={"session_id": portal_sid, "message": "VPN troubleshooting steps", "role": "user"},
+            )
+            self.assertEqual(portal_res.status_code, 200)
+
+            hist_res = self.client.get(f"/chat/history?session_id={portal_sid}", headers=self.cust_headers)
+            self.assertEqual(hist_res.status_code, 200, hist_res.text)
+            hist_rows = hist_res.json()
+            self.assertGreaterEqual(len(hist_rows), 1)
+            self.assertEqual(hist_rows[-1]["message"], "VPN troubleshooting steps")
+            self.assertIn("SOP-02", hist_rows[-1]["reply"])
+
+            forbidden_hist = self.client.get("/chat/history?session_id=portal-user-999", headers=self.cust_headers)
+            self.assertEqual(forbidden_hist.status_code, 403)
+
 
 if __name__ == "__main__":
     unittest.main()

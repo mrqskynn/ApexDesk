@@ -52,13 +52,17 @@ function mapApiTicket(t) {
       .toUpperCase() || "CU";
 
   const persistedNotes = Array.isArray(t.notes)
-    ? t.notes.map((n) => ({
-        id: n.id || "n-" + Math.random(),
+    ? t.notes.map((n, idx) => ({
+        id: n.id || `n-${t.id}-${idx}`,
         type: n.type || "agent",
         author: n.author || "Support Staff",
         time: formatTimeAgo(n.time),
         text: n.text || "",
         pendingTool: n.pending_tool || null,
+        citations: Array.isArray(n.citations) ? n.citations : [],
+        action_taken: n.action_taken || null,
+        escalated: Boolean(n.escalated),
+        latency_ms: n.latency_ms ?? null,
       }))
     : [];
 
@@ -277,6 +281,8 @@ export default function AgentTicketInbox() {
       const resp = await post("/chat", {
         session_id: "agent-" + targetTicketId,
         message: promptToSend,
+        display_message: rawPrompt || `AI SOP lookup for ${targetTicketId}`,
+        ticket_id: activeTicket.dbId || null,
         role: currentUser?.role || "agent",
       });
 
